@@ -1,0 +1,9 @@
+services:
+  redirect-service:
+    build: .
+    image: redirect-service:local
+    restart: unless-stopped
+    ports:
+      - "${PUBLISH_PORT:-8080}:8080"
+    environment:
+      PORT: "8080"
