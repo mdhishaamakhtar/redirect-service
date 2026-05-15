@@ -16,8 +16,10 @@ _MAX_REDIRECT_URI_LENGTH = 2048
 _CHROME_ANDROID_PACKAGE = "com.android.chrome"
 _IOS_CHROME_SCHEME = {"https": "googlechromes", "http": "googlechrome"}
 
-# Small delay lets Chrome intercept `googlechromes://`/`googlechrome://`; if unresolved, fall back.
-_IOS_CHROME_BRIDGE_FALLBACK_MS = 850
+# Delay before loading the plain https URL; gives Chrome / intent resolution time.
+# WhatsApp and similar WebViews often ignore HTTP 302 to `intent://…`, so we use an HTML page
+# with JS + a tap target instead of redirecting straight to a custom scheme.
+_BRIDGE_AUTO_FALLBACK_MS = 1200
 
 
 def _validate_redirect_target(raw: str) -> str:
@@ -103,31 +105,37 @@ def _ios_chrome_custom_scheme_url(target_url: str) -> str:
     return f"{chrome_scheme}://{tail}"
 
 
-def _ios_chrome_bridge_page(chrome_scheme_url: str, fallback_https_url: str) -> str:
-    """HTML bridge: attempt Chrome URL, then fall back to the default browser URL."""
+def _inapp_breakout_page(primary_url: str, fallback_https_url: str) -> str:
+    """
+    Bridge out of locked in-app browsers: try `primary_url` (Chrome intent or iOS chrome scheme),
+    then fall back to the original https URL. Includes explicit links because many WebViews only
+    hand off custom schemes after a user gesture.
+    """
 
-    js_chrome = json.dumps(chrome_scheme_url)
+    js_primary = json.dumps(primary_url)
     js_fallback = json.dumps(fallback_https_url)
-    esc_fb = escape(fallback_https_url, quote=True)
+    esc_primary = escape(primary_url, quote=True)
+    esc_fallback = escape(fallback_https_url, quote=True)
 
     return f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<noscript><meta http-equiv="refresh" content="0;url={esc_fb}"></noscript>
+<noscript><meta http-equiv="refresh" content="0;url={esc_fallback}"></noscript>
 <title>Opening link</title>
 <script>
 (function () {{
-  var chromeUrl = {js_chrome};
+  var primaryUrl = {js_primary};
   var fallbackUrl = {js_fallback};
-  window.location.replace(chromeUrl);
+  window.location.replace(primaryUrl);
   window.setTimeout(function () {{
     window.location.replace(fallbackUrl);
-  }}, {_IOS_CHROME_BRIDGE_FALLBACK_MS});
+  }}, {_BRIDGE_AUTO_FALLBACK_MS});
 }})();
 </script>
 </head><body>
-<p><a href="{esc_fb}">Continue in your browser</a></p>
+<p><a href="{esc_primary}" rel="noopener">Open in Chrome</a></p>
+<p><a href="{esc_fallback}" rel="noopener">Continue in this browser</a></p>
 </body></html>
 """
 
@@ -138,11 +146,17 @@ def _redirect_for_whatsapp(user_agent: str, target_url: str) -> Response:
     try:
         if _is_likely_android(user_agent):
             intent_url = _android_chrome_intent_url(target_url)
-            return redirect(intent_url, code=302)
+            html = _inapp_breakout_page(intent_url, target_url)
+            return Response(
+                html,
+                status=200,
+                headers={"Cache-Control": "no-store"},
+                mimetype="text/html; charset=utf-8",
+            )
 
         if _is_likely_ios(user_agent):
             chrome_url = _ios_chrome_custom_scheme_url(target_url)
-            html = _ios_chrome_bridge_page(chrome_url, target_url)
+            html = _inapp_breakout_page(chrome_url, target_url)
             return Response(
                 html,
                 status=200,
