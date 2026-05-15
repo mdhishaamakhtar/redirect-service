@@ -30,7 +30,7 @@ def redirect_handler():
     if raw is None:
         abort(400)
     target = _validate_redirect_target(raw)
-    return redirect(target, code=302)
+    return redirect(target, code=301)
 
 
 if __name__ == "__main__":
